@@ -117,6 +117,14 @@ async function loadSeason(season = APP.season) {
     fetchCsv(cfg.matches)
   ]);
 
+   console.log("=== BLUE DEMON DEBUG ===");
+console.log("Batting raw:", battingRaw);
+console.log("Batting raw length:", battingRaw.length);
+console.log("First batting row:", battingRaw[0]);
+console.log("Bowling raw:", bowlingRaw);
+console.log("Matches raw:", matchesRaw);
+console.log("========================");
+
   APP.data.batting = normalizeRows(battingRaw, BATTING_COLUMNS);
   APP.data.bowling = normalizeRows(bowlingRaw, BOWLING_COLUMNS);
   APP.data.matches = normalizeRows(matchesRaw, MATCH_COLUMNS);
