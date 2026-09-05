@@ -69,16 +69,32 @@ function normalizeRows(rows, columns) {
 }
 
 async function fetchCsv(url) {
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(`CSV request failed (${response.status})`);
+  // Make the error obvious if the library failed to load
+  if (typeof Papa === "undefined") {
+    throw new Error(
+      "PapaParse library did not load. Check the PapaParse CDN URL or network restrictions."
+    );
+  }
+
+  const response = await fetch(url, {
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    throw new Error(`CSV request failed (${response.status})`);
+  }
+
   const text = await response.text();
+
   const parsed = Papa.parse(text, {
     skipEmptyLines: "greedy",
     dynamicTyping: false
   });
-  if (parsed.errors?.length) {
+
+  if (parsed.errors && parsed.errors.length) {
     console.warn("PapaParse warnings:", parsed.errors);
   }
+
   return parsed.data;
 }
 
@@ -537,9 +553,10 @@ function handleLoadError(error) {
 async function init() {
   setupTheme();
   setupEvents();
-  // Render shell first; live values replace these once Sheets return data.
-  renderAll();
+
+  // Wait for live Google Sheets data
   await loadSeason(APP.season).catch(handleLoadError);
+
   APP.initialized = true;
 }
 
