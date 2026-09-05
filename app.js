@@ -101,9 +101,13 @@ async function fetchCsv(url) {
   }
 
   console.log("Loaded CSV:", url);
-  console.log("Parsed rows:", parsed.data);
+console.log("Parsed rows:", parsed.data);
 
-  return parsed.data;
+if (url.includes("gid=960895682")) {
+  window.DEBUG_BATTING = parsed.data;
+}
+
+return parsed.data;
 }
 
 async function loadSeason(season = APP.season) {
