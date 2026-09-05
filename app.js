@@ -21,7 +21,7 @@ const APP = {
 
 const BATTING_COLUMNS = ["Player", "Matches", "Innings", "Runs", "Balls", "S/R", "Ave", "NO", "4s", "6s", "10s", "HS", "Catches", "Photo"];
 const BOWLING_COLUMNS = ["Player", "Matches", "Innings", "Wickets", "Balls", "Overs", "Runs", "Economy", "Ave", "S/R"];
-const MATCH_COLUMNS = ["Date", "Opponent", "Result", "Score", "Overs", "Opp. Score", "Overs", "Notes"];
+const MATCH_COLUMNS = ["Date", "Opponent", "Result", "Score", "Overs", "Opp. Score", "Opp. Overs", "Notes"];
 
 const el = (id) => document.getElementById(id);
 
@@ -59,21 +59,24 @@ function initials(name) {
 
 function normalizeRows(rows, columns) {
   return rows
-    .filter(row => row.some(cell => String(cell ?? "").trim() !== ""))
+    .filter(row => {
+      const playerOrFirstColumn = row[columns[0]];
+      return String(playerOrFirstColumn ?? "").trim() !== "";
+    })
     .map(row => {
       const out = {};
-      columns.forEach((column, index) => { out[column] = String(row[index] ?? "").trim(); });
+
+      columns.forEach(column => {
+        out[column] = String(row[column] ?? "").trim();
+      });
+
       return out;
-    })
-    .filter(row => String(row[columns[0]] || "").trim() !== "");
+    });
 }
 
 async function fetchCsv(url) {
-  // Make the error obvious if the library failed to load
-  if (typeof Papa === "undefined") {
-    throw new Error(
-      "PapaParse library did not load. Check the PapaParse CDN URL or network restrictions."
-    );
+  if (!window.Papa || typeof window.Papa.parse !== "function") {
+    throw new Error("PapaParse did not load.");
   }
 
   const response = await fetch(url, {
@@ -86,14 +89,19 @@ async function fetchCsv(url) {
 
   const text = await response.text();
 
-  const parsed = Papa.parse(text, {
+  const parsed = window.Papa.parse(text, {
+    header: true,
     skipEmptyLines: "greedy",
-    dynamicTyping: false
+    dynamicTyping: false,
+    transformHeader: header => header.trim()
   });
 
-  if (parsed.errors && parsed.errors.length) {
+  if (parsed.errors?.length) {
     console.warn("PapaParse warnings:", parsed.errors);
   }
+
+  console.log("Loaded CSV:", url);
+  console.log("Parsed rows:", parsed.data);
 
   return parsed.data;
 }
