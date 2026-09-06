@@ -24,7 +24,7 @@ const APP = {
   initialized: false
 };
 
-const BATTING_COLUMNS = ["Player", "Matches", "Innings", "Runs", "Balls", "S/R", "Ave", "NO", "4s", "6s", "10s", "HS", "Catches", "Photo"];
+const BATTING_COLUMNS = ["Player", "Matches", "Innings", "Runs", "Balls", "S/R", "Ave", "NO", "4s", "6s", "10s", "HS", "Catches"];
 const BOWLING_COLUMNS = ["Player", "Matches", "Innings", "Wickets", "Balls", "Overs", "Runs", "Economy", "Ave", "S/R"];
 const MATCH_COLUMNS = ["Date", "Opponent", "Result", "Score", "Overs", "Opp. Score", "Opp. Overs", "Notes"];
 
@@ -74,6 +74,12 @@ function normalizeRows(rows, columns) {
       columns.forEach(column => {
         out[column] = String(row[column] ?? "").trim();
       });
+
+      // Preserve Photo link from sheet if available
+      const photoKey = Object.keys(row).find(k => cleanKey(k) === "photo");
+      if (photoKey) {
+        out.Photo = String(row[photoKey] ?? "").trim();
+      }
 
       return out;
     });
@@ -195,15 +201,22 @@ function buildPlayerIndex() {
 function playerAvatar(name, photo, className = "player-avatar") {
   const wrap = document.createElement("div");
   wrap.className = className;
-  wrap.textContent = initials(name);
+
   if (photo) {
     const img = document.createElement("img");
     img.alt = `${name} headshot`;
     img.loading = "lazy";
     img.src = photo;
-    img.addEventListener("error", () => img.remove(), { once: true });
+    // Fall back to initials if the image link breaks or fails to load
+    img.addEventListener("error", () => {
+      img.remove();
+      wrap.textContent = initials(name);
+    }, { once: true });
     wrap.appendChild(img);
+  } else {
+    wrap.textContent = initials(name);
   }
+
   return wrap;
 }
 
@@ -504,7 +517,7 @@ function openPlayerModal(name) {
   if (!player) return;
   const batting = player.batting;
   const bowling = player.bowling;
-  const photo = batting.Photo || "";
+  const photo = batting.Photo || bowling.Photo || "";
   const badges = [...eliteBadges(batting, "batting"), ...eliteBadges(bowling, "bowling")];
 
   const avatar = playerAvatar(name, photo, "player-hero-avatar");
