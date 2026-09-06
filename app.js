@@ -60,8 +60,8 @@ function initials(name) {
 function normalizeRows(rows, columns) {
   return rows
     .filter(row => {
-      const playerOrFirstColumn = row[columns[0]];
-      return String(playerOrFirstColumn ?? "").trim() !== "";
+      const firstColumn = row[columns[0]];
+      return String(firstColumn ?? "").trim() !== "";
     })
     .map(row => {
       const out = {};
@@ -79,9 +79,7 @@ async function fetchCsv(url) {
     throw new Error("PapaParse did not load.");
   }
 
-  const response = await fetch(url, {
-    cache: "no-store"
-  });
+  const response = await fetch(url, { cache: "no-store" });
 
   if (!response.ok) {
     throw new Error(`CSV request failed (${response.status})`);
@@ -89,27 +87,60 @@ async function fetchCsv(url) {
 
   const text = await response.text();
 
+  // Parse without headers first so we can reliably handle
+  // the extra blank column in the published Google Sheet CSV.
   const parsed = window.Papa.parse(text, {
-    header: true,
     skipEmptyLines: "greedy",
-    dynamicTyping: false,
-    transformHeader: header => header.trim()
+    dynamicTyping: false
   });
 
   if (parsed.errors?.length) {
     console.warn("PapaParse warnings:", parsed.errors);
   }
 
+  const rows = parsed.data;
+
+  if (!rows.length) {
+    return [];
+  }
+
+  // Remove a leading blank column if Google Sheets included one.
+  const firstRow = rows[0];
+  const hasLeadingBlankColumn =
+    String(firstRow[0] ?? "").trim() === "";
+
+  const cleanedRows = hasLeadingBlankColumn
+    ? rows.map(row => row.slice(1))
+    : rows;
+
+  const headers = cleanedRows[0].map(header =>
+    String(header ?? "").replace(/^\uFEFF/, "").trim()
+  );
+
+  const dataRows = cleanedRows.slice(1);
+
+  const result = dataRows
+    .filter(row =>
+      row.some(cell => String(cell ?? "").trim() !== "")
+    )
+    .map(row => {
+      const obj = {};
+
+      headers.forEach((header, index) => {
+        if (header) {
+          obj[header] = String(row[index] ?? "").trim();
+        }
+      });
+
+      return obj;
+    });
+
   console.log("Loaded CSV:", url);
-console.log("Parsed rows:", parsed.data);
+  console.log("Headers:", headers);
+  console.log("Parsed rows:", result);
 
-if (url.includes("gid=960895682")) {
-  window.DEBUG_BATTING = parsed.data;
+  return result;
 }
-
-return parsed.data;
-}
-
 async function loadSeason(season = APP.season) {
   const cfg = SHEET_CONFIG[season];
   if (!cfg) throw new Error(`No sheet configuration found for ${season}.`);
