@@ -1,6 +1,7 @@
 /* =========================================================
-   BLUE DEMON CRICKET — 2026–27
+   BLUE DEMON CRICKET
    Change only SHEET_CONFIG when you add another season.
+   The first season listed is the default.
    ========================================================= */
 const SHEET_CONFIG = {
   "2026-27": {
@@ -10,623 +11,628 @@ const SHEET_CONFIG = {
   },
   "2025-26": {
     batting: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQXsO-A29-HMU5T5v3lW6v474irClAhDXXE3NcXXkJm4r77z0lQJiG2xEoLR9kZJmreiIwXGNxfFR58/pub?gid=1041989768&single=true&output=csv",
-    bowling: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQXsO-A29-HMU5T5v3lW6v474irClAhDXXE3NcXXkJm4r77z0lQJiG2xEoLR9kZJmreiIwXGNxfFR58/pub?gid=1051296080&single=true&output=csv", 
+    bowling: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQXsO-A29-HMU5T5v3lW6v474irClAhDXXE3NcXXkJm4r77z0lQJiG2xEoLR9kZJmreiIwXGNxfFR58/pub?gid=1051296080&single=true&output=csv",
     matches: "https://docs.google.com/spreadsheets/d/e/2PACX-1vQXsO-A29-HMU5T5v3lW6v474irClAhDXXE3NcXXkJm4r77z0lQJiG2xEoLR9kZJmreiIwXGNxfFR58/pub?gid=226347194&single=true&output=csv"
   }
-};
-
-const APP = {
-  season: "2026-27",
-  data: { batting: [], bowling: [], matches: [] },
-  charts: {},
-  tableState: {},
-  playerIndex: new Map(),
-  initialized: false
 };
 
 const BATTING_COLUMNS = ["Player", "Matches", "Innings", "Runs", "Balls", "S/R", "Ave", "NO", "4s", "6s", "10s", "HS", "Catches"];
 const BOWLING_COLUMNS = ["Player", "Matches", "Innings", "Wickets", "Balls", "Overs", "Runs", "Economy", "Ave", "S/R"];
 const MATCH_COLUMNS = ["Date", "Opponent", "Result", "Score", "Overs", "Opp. Score", "Opp. Overs", "Notes"];
+const CACHE_PREFIX = "blueDemonData:";
+
+const APP = {
+  season: Object.keys(SHEET_CONFIG)[0],
+  data: { batting: [], bowling: [], matches: [] },
+  players: new Map(),
+  tables: {},
+  matchFilter: "all",
+  loading: null
+};
 
 const el = (id) => document.getElementById(id);
 
-function cleanKey(key) {
-  return String(key ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
+/* ---------- Small helpers ---------- */
+
+function isBlank(value) {
+  const v = String(value ?? "").trim();
+  return v === "" || v === "-" || v === "—";
 }
 
 function num(value) {
-  const n = parseFloat(String(value ?? "").replace(/,/g, "").trim());
+  const n = parseFloat(String(value ?? "").replace(/,/g, ""));
   return Number.isFinite(n) ? n : 0;
 }
 
-function displayNum(value) {
-  if (value === null || value === undefined || value === "") return "—";
-  const n = Number(value);
-  if (!Number.isFinite(n)) return String(value);
-  return Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+function show(value) {
+  return isBlank(value) ? "—" : String(value).trim();
 }
 
-function rawValue(row, wanted) {
-  const target = cleanKey(wanted);
-  const keys = Object.keys(row);
-  const key = keys.find(k => cleanKey(k) === target);
-  return key ? row[key] : "";
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>'"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c]));
+}
+
+function seasonLabel(season) {
+  return season.replace("-", "–");
 }
 
 function initials(name) {
-  const parts = String(name || "Player").trim().split(/\s+/).filter(Boolean);
-  if (!parts.length) return "P";
-  return parts.slice(0, 2).map(p => p[0]).join("").toUpperCase();
+  const parts = String(name || "P").trim().split(/\s+/).filter(Boolean);
+  return parts.slice(0, 2).map(p => p[0]).join("").toUpperCase() || "P";
 }
 
-function normalizeRows(rows, columns) {
-  return rows
-    .filter(row => {
-      const firstColumn = row[columns[0]];
-      return String(firstColumn ?? "").trim() !== "";
-    })
+function resultType(result) {
+  const v = String(result || "").toLowerCase();
+  if (/win|won|victory/.test(v)) return "win";
+  if (/loss|lost|defeat/.test(v)) return "loss";
+  if (/draw|tie|no result|abandon/.test(v)) return "draw";
+  return "other";
+}
+
+function timeAgo(ts) {
+  const mins = Math.round((Date.now() - ts) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} hr ago`;
+  return new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function formatDate(value) {
+  const d = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return { day: show(value), month: "" };
+  return { day: d.getDate(), month: d.toLocaleDateString([], { month: "short" }), full: d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", year: "numeric" }) };
+}
+
+function dateValue(value) {
+  const t = Date.parse(value);
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/* ---------- CSV loading ---------- */
+
+// Minimal RFC 4180 parser (quoted fields, escaped quotes, CRLF).
+function parseCsv(text) {
+  const rows = [];
+  let row = [], field = "", quoted = false;
+  text = text.replace(/^﻿/, "");
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(field); rows.push(row); row = []; field = "";
+    } else field += c;
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// The published sheets have blank rows/columns around the table,
+// so find the header row by its first column name and read from there.
+function tableFromCsv(text, columns) {
+  const rows = parseCsv(text);
+  const key = s => String(s ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const firstKey = key(columns[0]);
+  let headerIndex = -1, offset = 0;
+  for (let r = 0; r < rows.length && headerIndex < 0; r++) {
+    const c = rows[r].findIndex(cell => key(cell) === firstKey);
+    if (c >= 0) { headerIndex = r; offset = c; }
+  }
+  if (headerIndex < 0) return [];
+
+  const headers = rows[headerIndex].map(key);
+  const indexOf = name => headers.indexOf(key(name));
+  const photoIndex = indexOf("photo");
+
+  return rows.slice(headerIndex + 1)
+    .filter(row => String(row[offset] ?? "").trim() !== "")
     .map(row => {
       const out = {};
-
       columns.forEach(column => {
-        out[column] = String(row[column] ?? "").trim();
+        const i = indexOf(column);
+        out[column] = i >= 0 ? String(row[i] ?? "").trim() : "";
       });
-
-      // Preserve Photo link from sheet if available
-      const photoKey = Object.keys(row).find(k => cleanKey(k) === "photo");
-      if (photoKey) {
-        out.Photo = String(row[photoKey] ?? "").trim();
-      }
-
+      if (photoIndex >= 0) out.Photo = String(row[photoIndex] ?? "").trim();
       return out;
     });
 }
 
-async function fetchCsv(url) {
-  if (!window.Papa || typeof window.Papa.parse !== "function") {
-    throw new Error("PapaParse did not load.");
-  }
-
+async function fetchText(url) {
   const response = await fetch(url, { cache: "no-store" });
-
-  if (!response.ok) {
-    throw new Error(`CSV request failed (${response.status})`);
-  }
-
-  const text = await response.text();
-
-  // Parse without headers first so we can reliably handle
-  // the extra blank column in the published Google Sheet CSV.
-  const parsed = window.Papa.parse(text, {
-    skipEmptyLines: "greedy",
-    dynamicTyping: false
-  });
-
-  if (parsed.errors?.length) {
-    console.warn("PapaParse warnings:", parsed.errors);
-  }
-
-  const rows = parsed.data;
-
-  if (!rows.length) {
-    return [];
-  }
-
-  // Remove a leading blank column if Google Sheets included one.
-  const firstRow = rows[0];
-  const hasLeadingBlankColumn =
-    String(firstRow[0] ?? "").trim() === "";
-
-  const cleanedRows = hasLeadingBlankColumn
-    ? rows.map(row => row.slice(1))
-    : rows;
-
-  const headers = cleanedRows[0].map(header =>
-    String(header ?? "").replace(/^\uFEFF/, "").trim()
-  );
-
-  const dataRows = cleanedRows.slice(1);
-
-  const result = dataRows
-    .filter(row =>
-      row.some(cell => String(cell ?? "").trim() !== "")
-    )
-    .map(row => {
-      const obj = {};
-
-      headers.forEach((header, index) => {
-        if (header) {
-          obj[header] = String(row[index] ?? "").trim();
-        }
-      });
-
-      return obj;
-    });
-
-  console.log("Loaded CSV:", url);
-  console.log("Headers:", headers);
-  console.log("Parsed rows:", result);
-
-  return result;
+  if (!response.ok) throw new Error(`Sheet request failed (${response.status})`);
+  return response.text();
 }
-async function loadSeason(season = APP.season) {
+
+function readCache(season) {
+  try { return JSON.parse(localStorage.getItem(CACHE_PREFIX + season)); } catch { return null; }
+}
+
+function writeCache(season, data) {
+  try { localStorage.setItem(CACHE_PREFIX + season, JSON.stringify({ ...data, savedAt: Date.now() })); } catch { /* storage full or blocked */ }
+}
+
+async function fetchSeason(season) {
   const cfg = SHEET_CONFIG[season];
-  if (!cfg) throw new Error(`No sheet configuration found for ${season}.`);
-
-  setSyncStatus("Syncing live sheets…", false);
-  const [battingRaw, bowlingRaw, matchesRaw] = await Promise.all([
-    fetchCsv(cfg.batting),
-    fetchCsv(cfg.bowling),
-    fetchCsv(cfg.matches)
-  ]);
-
-   console.log("=== BLUE DEMON DEBUG ===");
-console.log("Batting raw:", battingRaw);
-console.log("Batting raw length:", battingRaw.length);
-console.log("First batting row:", battingRaw[0]);
-console.log("Bowling raw:", bowlingRaw);
-console.log("Matches raw:", matchesRaw);
-console.log("========================");
-
-  APP.data.batting = normalizeRows(battingRaw, BATTING_COLUMNS);
-  APP.data.bowling = normalizeRows(bowlingRaw, BOWLING_COLUMNS);
-  APP.data.matches = normalizeRows(matchesRaw, MATCH_COLUMNS);
-  buildPlayerIndex();
-  renderAll();
-  setSyncStatus(`Live data synced · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`, true);
+  const [batting, bowling, matches] = await Promise.all([cfg.batting, cfg.bowling, cfg.matches].map(fetchText));
+  return {
+    batting: tableFromCsv(batting, BATTING_COLUMNS),
+    bowling: tableFromCsv(bowling, BOWLING_COLUMNS),
+    matches: tableFromCsv(matches, MATCH_COLUMNS)
+  };
 }
 
-function setSyncStatus(message, ok = true) {
+// Show cached stats instantly, then refresh from Google Sheets.
+async function loadSeason(season, { force = false } = {}) {
+  const cached = readCache(season);
+  if (cached && !force) {
+    applyData(cached);
+    setSync(`Updated ${timeAgo(cached.savedAt)}`, "ok");
+  } else if (!cached) {
+    applyData(null);
+  }
+
+  const token = Symbol(season);
+  APP.loading = token;
+  setSync(cached ? `Updated ${timeAgo(cached.savedAt)} · syncing…` : "Syncing live sheets…", "busy");
+
+  try {
+    const fresh = await fetchSeason(season);
+    if (APP.loading !== token) return;
+    writeCache(season, fresh);
+    applyData(fresh);
+    setSync("Live · just synced", "ok");
+    if (force) toast("Stats refreshed");
+  } catch (error) {
+    if (APP.loading !== token) return;
+    console.error(error);
+    setSync(cached ? `Offline · showing data from ${timeAgo(cached.savedAt)}` : "Couldn't reach the sheets — check your connection", "error");
+  } finally {
+    if (APP.loading === token) APP.loading = null;
+  }
+}
+
+function setSync(message, state) {
   el("syncStatus").textContent = message;
-  el("syncDot").classList.toggle("error", !ok);
+  el("syncDot").dataset.state = state;
+  el("refreshBtn").classList.toggle("is-spinning", state === "busy");
 }
 
-function buildPlayerIndex() {
-  APP.playerIndex = new Map();
-  const names = new Set([
-    ...APP.data.batting.map(r => r.Player).filter(Boolean),
-    ...APP.data.bowling.map(r => r.Player).filter(Boolean)
-  ]);
+/* ---------- Data model ---------- */
 
-  names.forEach(name => {
-    const batting = APP.data.batting.find(r => r.Player === name) || {};
-    const bowling = APP.data.bowling.find(r => r.Player === name) || {};
-    APP.playerIndex.set(name, { name, batting, bowling });
-  });
+function applyData(data) {
+  APP.data = data ? { batting: data.batting, bowling: data.bowling, matches: data.matches } : { batting: [], bowling: [], matches: [] };
+  APP.players = new Map();
+  const add = (row, type) => {
+    const name = row.Player.trim();
+    if (!APP.players.has(name)) APP.players.set(name, { name, batting: null, bowling: null, photo: "" });
+    const p = APP.players.get(name);
+    p[type] = row;
+    if (row.Photo && !p.photo) p.photo = row.Photo;
+  };
+  APP.data.batting.forEach(r => add(r, "batting"));
+  APP.data.bowling.forEach(r => add(r, "bowling"));
+  renderAll(!data);
 }
 
-function playerAvatar(name, photo, className = "player-avatar") {
-  const wrap = document.createElement("div");
-  wrap.className = className;
-
-  if (photo) {
-    const img = document.createElement("img");
-    img.alt = `${name} headshot`;
-    img.loading = "lazy";
-    img.src = photo;
-    // Fall back to initials if the image link breaks or fails to load
-    img.addEventListener("error", () => {
-      img.remove();
-      wrap.textContent = initials(name);
-    }, { once: true });
-    wrap.appendChild(img);
-  } else {
-    wrap.textContent = initials(name);
+function renderAll(skeleton = false) {
+  el("heroSeason").textContent = `${seasonLabel(APP.season)} season`;
+  if (skeleton) {
+    el("heroRecord").innerHTML = "";
+    el("summaryCards").innerHTML = '<div class="stat skeleton"></div>'.repeat(4);
+    ["runsLeaders", "wicketsLeaders"].forEach(id => el(id).innerHTML = '<li class="skeleton-line"></li>'.repeat(5));
+    el("recentMatches").innerHTML = '<div class="match skeleton"></div>'.repeat(2);
+    return;
   }
-
-  return wrap;
-}
-
-function eliteBadges(record, type) {
-  const badges = [];
-  if (type === "batting") {
-    if (num(record.HS) >= 50) badges.push("🔥 HS 50+");
-    if (num(record["S/R"]) >= 140) badges.push("🔥 S/R 140+");
-  }
-  if (type === "bowling") {
-    if (num(record.Wickets) >= 3) badges.push("🔥 3+ Wkts");
-  }
-  return badges;
-}
-
-function renderTable(tableId, rows, columns, options = {}) {
-  const table = el(tableId);
-  const thead = table.querySelector("thead");
-  const tbody = table.querySelector("tbody");
-  const empty = el(options.emptyId);
-  const searchInput = el(options.searchId);
-  const stateKey = tableId;
-
-  if (!APP.tableState[stateKey]) {
-    APP.tableState[stateKey] = { query: "", sortKey: options.defaultSort || columns[0], direction: "desc" };
-  }
-
-  const state = APP.tableState[stateKey];
-  const query = (state.query || "").toLowerCase().trim();
-  let filtered = rows.filter(row => {
-    if (!query) return true;
-    return columns.some(column => String(row[column] ?? "").toLowerCase().includes(query));
-  });
-
-  filtered.sort((a, b) => compareValues(a[state.sortKey], b[state.sortKey], state.direction));
-
-  thead.innerHTML = "";
-  const headRow = document.createElement("tr");
-  columns.forEach((column, index) => {
-    const th = document.createElement("th");
-    th.textContent = column;
-    th.dataset.sortable = "true";
-    if (state.sortKey === column) th.classList.add(state.direction === "asc" ? "sort-asc" : "sort-desc");
-    th.addEventListener("click", () => {
-      if (state.sortKey === column) state.direction = state.direction === "asc" ? "desc" : "asc";
-      else { state.sortKey = column; state.direction = "desc"; }
-      renderTable(tableId, rows, columns, options);
-    });
-    headRow.appendChild(th);
-  });
-  thead.appendChild(headRow);
-
-  tbody.innerHTML = "";
-  filtered.forEach(row => {
-    const tr = document.createElement("tr");
-    if (options.rowClick) tr.addEventListener("click", () => options.rowClick(row));
-    columns.forEach(column => {
-      const td = document.createElement("td");
-      const value = row[column] ?? "";
-
-      if (column === "Player") {
-        td.appendChild(playerCell(row));
-      } else {
-        td.textContent = value === "" ? "—" : value;
-        if (options.highlight === "green" && column === "Runs") td.classList.add("stat-highlight-green");
-        if (options.highlight === "red" && column === "Wickets") td.classList.add("stat-highlight-red");
-        if (column === "Result") addResultClass(td, value);
-        if ((options.badgeType === "batting" || options.badgeType === "bowling") && column === (options.badgeType === "batting" ? "HS" : "Wickets")) {
-          const badges = eliteBadges(row, options.badgeType);
-          if (badges.length) td.insertAdjacentHTML("beforeend", ` <span class="elite-badge" title="Elite stat">🔥</span>`);
-        }
-      }
-      tr.appendChild(td);
-    });
-    tbody.appendChild(tr);
-  });
-
-  empty?.classList.toggle("is-hidden", filtered.length > 0);
-  searchInput?.addEventListener("input", () => {
-    state.query = searchInput.value;
-    renderTable(tableId, rows, columns, options);
-  }, { once: true });
-  if (searchInput && searchInput.value !== state.query) searchInput.value = state.query;
-}
-
-function compareValues(a, b, direction) {
-  const aNum = num(a), bNum = num(b);
-  const bothNumeric = String(a ?? "").trim() !== "" && String(b ?? "").trim() !== "" && (Number.isFinite(parseFloat(String(a).replace(/,/g, ""))) && Number.isFinite(parseFloat(String(b).replace(/,/g, ""))));
-  let result;
-  if (bothNumeric) result = aNum - bNum;
-  else result = String(a ?? "").localeCompare(String(b ?? ""), undefined, { numeric: true, sensitivity: "base" });
-  return direction === "asc" ? result : -result;
-}
-
-function playerCell(row) {
-  const cell = document.createElement("div");
-  cell.className = "player-cell";
-  cell.appendChild(playerAvatar(row.Player, row.Photo));
-  const name = document.createElement("span");
-  name.className = "player-name";
-  name.textContent = row.Player;
-  cell.appendChild(name);
-  const badges = eliteBadges(row, APP.tableState.__typeForCurrentTable || "");
-  if (badges.length) {
-    const badge = document.createElement("span");
-    badge.className = "elite-badge";
-    badge.textContent = "🔥";
-    badge.title = badges.join(" · ");
-    cell.appendChild(badge);
-  }
-  return cell;
-}
-
-function addResultClass(td, value) {
-  const v = String(value || "").toLowerCase();
-  if (/win|won|victory/.test(v)) td.classList.add("result-win");
-  else if (/loss|lost|defeat/.test(v)) td.classList.add("result-loss");
-  else if (/draw|tie/.test(v)) td.classList.add("result-draw");
-}
-
-function renderAll() {
-  renderSummaryCards();
-  renderCharts();
-
-  APP.tableState.__typeForCurrentTable = "batting";
-  renderTable("battingTable", APP.data.batting, BATTING_COLUMNS, {
-    searchId: "battingSearch",
-    emptyId: "battingEmpty",
-    defaultSort: "Runs",
-    highlight: "green",
-    badgeType: "batting",
-    rowClick: row => openPlayerModal(row.Player)
-  });
-
-  APP.tableState.__typeForCurrentTable = "bowling";
-  renderTable("bowlingTable", APP.data.bowling, BOWLING_COLUMNS, {
-    searchId: "bowlingSearch",
-    emptyId: "bowlingEmpty",
-    defaultSort: "Wickets",
-    highlight: "red",
-    badgeType: "bowling",
-    rowClick: row => openPlayerModal(row.Player)
-  });
-
-  renderTable("matchesTable", APP.data.matches, MATCH_COLUMNS, {
-    searchId: "matchesSearch",
-    emptyId: "matchesEmpty",
-    defaultSort: "Date",
-    rowClick: null
-  });
-
+  renderHome();
+  renderTable("batting");
+  renderTable("bowling");
+  renderMatches();
   populateVsSelectors();
-  renderVsComparison();
+  renderVs();
 }
 
-function renderSummaryCards() {
-  const matches = APP.data.matches;
-  const wins = matches.filter(m => /win|won|victory/i.test(m.Result)).length;
-  const losses = matches.filter(m => /loss|lost|defeat/i.test(m.Result)).length;
-  const runs = Math.max(0, ...APP.data.batting.map(r => num(r.Runs)));
-  const wickets = Math.max(0, ...APP.data.bowling.map(r => num(r.Wickets)));
+/* ---------- Home ---------- */
+
+function renderHome() {
+  const { batting, bowling, matches } = APP.data;
+  const counts = { win: 0, loss: 0, draw: 0, other: 0 };
+  matches.forEach(m => counts[resultType(m.Result)]++);
+
+  const sortedMatches = [...matches].sort((a, b) => dateValue(b.Date) - dateValue(a.Date));
+  const form = sortedMatches.slice(0, 5).reverse().map(m => {
+    const t = resultType(m.Result);
+    return `<span class="form-pip is-${t}" title="${escapeHtml(m.Opponent)}">${t === "win" ? "W" : t === "loss" ? "L" : "–"}</span>`;
+  }).join("");
+  el("heroRecord").innerHTML = matches.length
+    ? `<span class="record-num">${counts.win}<small>W</small></span><span class="record-num">${counts.loss}<small>L</small></span>${counts.draw ? `<span class="record-num">${counts.draw}<small>T/D</small></span>` : ""}<span class="form">${form}</span>`
+    : `<span class="record-empty">No matches played yet</span>`;
+
+  const topBat = [...batting].sort((a, b) => num(b.Runs) - num(a.Runs))[0];
+  const topBowl = [...bowling].sort((a, b) => num(b.Wickets) - num(a.Wickets) || num(a.Economy) - num(b.Economy))[0];
+  const teamRuns = batting.reduce((s, r) => s + num(r.Runs), 0);
+  const winPct = matches.length ? Math.round((counts.win / matches.length) * 100) : 0;
   const cards = [
-    ["Matches", matches.length, `${wins} wins · ${losses} losses`, "🏏"],
-    ["Top Runs", displayNum(runs), topPlayer(APP.data.batting, "Runs"), "🔥"],
-    ["Top Wickets", displayNum(wickets), topPlayer(APP.data.bowling, "Wickets"), "⚡"],
-    ["Players", APP.playerIndex.size, "Across batting + bowling", "👥"]
+    ["Matches", matches.length, matches.length ? `${winPct}% win rate` : "Season starting soon"],
+    ["Top runs", topBat ? num(topBat.Runs) : "—", topBat ? topBat.Player : "No data yet", topBat?.Player],
+    ["Top wickets", topBowl ? num(topBowl.Wickets) : "—", topBowl ? topBowl.Player : "No data yet", topBowl?.Player],
+    ["Team runs", teamRuns.toLocaleString(), `${APP.players.size} players used`]
   ];
-  el("summaryCards").innerHTML = cards.map(([label, value, note, icon]) => `
-    <div class="column is-6-tablet is-3-desktop">
-      <div class="card app-card summary-card">
-        <div class="card-content">
-          <div class="is-flex is-justify-content-space-between is-align-items-start">
-            <div>
-              <div class="summary-label">${escapeHtml(label)}</div>
-              <div class="summary-value">${escapeHtml(String(value))}</div>
-              <div class="summary-note">${escapeHtml(note)}</div>
-            </div>
-            <div class="summary-icon">${icon}</div>
-          </div>
-        </div>
-      </div>
-    </div>`).join("");
+  el("summaryCards").innerHTML = cards.map(([label, value, note, player]) => `
+    <${player ? `button type="button" data-player="${escapeHtml(player)}"` : "div"} class="stat">
+      <span class="stat-label">${escapeHtml(label)}</span>
+      <span class="stat-value">${escapeHtml(String(value))}</span>
+      <span class="stat-note">${escapeHtml(note)}</span>
+    </${player ? "button" : "div"}>`).join("");
+
+  renderLeaders("runsLeaders", batting, "Runs", r => `${show(r.Balls)} balls · S/R ${show(r["S/R"])}`);
+  renderLeaders("wicketsLeaders", bowling, "Wickets", r => `${show(r.Overs)} ov · Econ ${show(r.Economy)}`);
+
+  el("recentMatches").innerHTML = sortedMatches.length
+    ? sortedMatches.slice(0, 3).map(matchCard).join("")
+    : `<p class="empty">No matches yet this season.</p>`;
 }
 
-function topPlayer(rows, key) {
-  const top = [...rows].sort((a, b) => num(b[key]) - num(a[key]))[0];
-  return top ? top.Player : "No data yet";
+function renderLeaders(id, rows, key, sub) {
+  const top = rows.filter(r => num(r[key]) > 0).sort((a, b) => num(b[key]) - num(a[key])).slice(0, 5);
+  const max = Math.max(1, ...top.map(r => num(r[key])));
+  el(id).innerHTML = top.length ? top.map((r, i) => `
+    <li>
+      <button type="button" class="leader" data-player="${escapeHtml(r.Player.trim())}">
+        <span class="leader-rank">${i + 1}</span>
+        ${avatarHtml(r.Player, APP.players.get(r.Player.trim())?.photo)}
+        <span class="leader-body">
+          <span class="leader-name">${escapeHtml(r.Player)}</span>
+          <span class="leader-bar"><span style="--w:${(num(r[key]) / max) * 100}%"></span></span>
+          <span class="leader-sub">${escapeHtml(sub(r))}</span>
+        </span>
+        <span class="leader-value">${num(r[key])}</span>
+      </button>
+    </li>`).join("") : `<li class="empty">No data yet.</li>`;
 }
 
-function getChartTextColor() {
-  return getComputedStyle(document.body).getPropertyValue("--muted").trim() || "#67748d";
+function avatarHtml(name, photo, cls = "avatar") {
+  const fallback = `<span>${escapeHtml(initials(name))}</span>`;
+  if (!photo) return `<span class="${cls}">${fallback}</span>`;
+  return `<span class="${cls}">${fallback}<img src="${escapeHtml(photo)}" alt="" loading="lazy" decoding="async" onerror="this.remove()"></span>`;
 }
 
-function getChartGridColor() {
-  return getComputedStyle(document.body).getPropertyValue("--border").trim() || "#dce5f0";
+/* ---------- Tables ---------- */
+
+// Display order puts the headline stats next to the name so they're visible on phones.
+const TABLES = {
+  batting: { columns: ["Player", "Runs", "Balls", "S/R", "Ave", "HS", "Innings", "Matches", "NO", "4s", "6s", "10s", "Catches"], sortKey: "Runs", highlight: "Runs", search: "battingSearch", empty: "battingEmpty" },
+  bowling: { columns: ["Player", "Wickets", "Overs", "Runs", "Economy", "Ave", "S/R", "Innings", "Matches", "Balls"], sortKey: "Wickets", highlight: "Wickets", search: "bowlingSearch", empty: "bowlingEmpty" }
+};
+const LOWER_IS_BETTER = new Set(["Economy"]);
+
+function compareValues(a, b) {
+  const aBlank = isBlank(a), bBlank = isBlank(b);
+  if (aBlank || bBlank) return aBlank === bBlank ? 0 : aBlank ? 1 : -1; // blanks always last
+  const an = parseFloat(String(a).replace(/,/g, "")), bn = parseFloat(String(b).replace(/,/g, ""));
+  if (Number.isFinite(an) && Number.isFinite(bn)) return an - bn;
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
 }
 
-function destroyChart(key) {
-  if (APP.charts[key]) {
-    APP.charts[key].destroy();
-    APP.charts[key] = null;
+function renderTable(type) {
+  const cfg = TABLES[type];
+  const state = APP.tables[type] ||= { query: "", sortKey: cfg.sortKey, dir: -1 };
+  const table = el(`${type}Table`);
+  const rows = APP.data[type];
+  const q = state.query.toLowerCase().trim();
+
+  const filtered = rows.filter(r => !q || r.Player.toLowerCase().includes(q));
+  filtered.sort((a, b) => {
+    const blankA = isBlank(a[state.sortKey]), blankB = isBlank(b[state.sortKey]);
+    if (blankA || blankB) return compareValues(a[state.sortKey], b[state.sortKey]);
+    return compareValues(a[state.sortKey], b[state.sortKey]) * state.dir || a.Player.localeCompare(b.Player);
+  });
+
+  table.tHead.innerHTML = `<tr>${cfg.columns.map(c => {
+    const active = c === state.sortKey;
+    return `<th scope="col" class="${c === cfg.highlight ? "is-key " : ""}${active ? "is-sorted" : ""}" aria-sort="${active ? (state.dir > 0 ? "ascending" : "descending") : "none"}"><button type="button" data-sort="${escapeHtml(c)}">${escapeHtml(c)}<i aria-hidden="true">${active ? (state.dir > 0 ? "▲" : "▼") : ""}</i></button></th>`;
+  }).join("")}</tr>`;
+
+  table.tBodies[0].innerHTML = filtered.map(r => `
+    <tr data-player="${escapeHtml(r.Player.trim())}" tabindex="0">
+      ${cfg.columns.map(c => c === "Player"
+        ? `<th scope="row"><span class="player-cell">${avatarHtml(r.Player, APP.players.get(r.Player.trim())?.photo)}<span>${escapeHtml(r.Player)}</span>${badges(type, r).length ? `<span class="hot" title="${escapeHtml(badges(type, r).join(" · "))}">🔥</span>` : ""}</span></th>`
+        : `<td class="${c === cfg.highlight ? "is-key" : ""}${c === state.sortKey ? " is-sorted" : ""}">${escapeHtml(show(r[c]))}</td>`).join("")}
+    </tr>`).join("");
+
+  el(cfg.empty).hidden = filtered.length > 0 || rows.length === 0;
+}
+
+function badges(type, r) {
+  if (!r) return [];
+  const out = [];
+  if (type === "batting") {
+    if (num(r.HS) >= 50) out.push("HS 50+");
+    if (num(r["S/R"]) >= 140 && num(r.Balls) >= 20) out.push("S/R 140+");
+  } else if (num(r.Wickets) >= 8 || (num(r.Economy) > 0 && num(r.Economy) <= 4 && num(r.Balls) >= 30)) {
+    out.push(num(r.Wickets) >= 8 ? "8+ wickets" : "Economy ≤ 4");
   }
+  return out;
 }
 
-function renderCharts() {
-  if (typeof Chart === "undefined") return;
-  const text = getChartTextColor();
-  const grid = getChartGridColor();
-  Chart.defaults.color = text;
-  Chart.defaults.font.family = "Inter, ui-sans-serif, system-ui, sans-serif";
-
-  const topRuns = [...APP.data.batting].sort((a,b) => num(b.Runs)-num(a.Runs)).slice(0,5);
-  destroyChart("runs");
-  APP.charts.runs = new Chart(el("runsChart"), {
-    type: "bar",
-    data: { labels: topRuns.map(r => r.Player), datasets: [{ label: "Runs", data: topRuns.map(r => num(r.Runs)), borderRadius: 8, backgroundColor: "#2e69cf" }] },
-    options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true, grid:{ color:grid } }, x:{ grid:{ display:false } } } }
-  });
-
-  const topWickets = [...APP.data.bowling].sort((a,b) => num(b.Wickets)-num(a.Wickets)).slice(0,5);
-  destroyChart("wickets");
-  APP.charts.wickets = new Chart(el("wicketsChart"), {
-    type: "bar",
-    data: { labels: topWickets.map(r => r.Player), datasets: [{ label: "Wickets", data: topWickets.map(r => num(r.Wickets)), borderRadius: 8, backgroundColor: "#db4a5a" }] },
-    options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true, grid:{ color:grid }, ticks:{ precision:0 } }, x:{ grid:{ display:false } } } }
-  });
-
-  const resultCounts = { Wins:0, Losses:0, Draws:0, Other:0 };
-  APP.data.matches.forEach(m => {
-    const result = String(m.Result || "").toLowerCase();
-    if (/win|won|victory/.test(result)) resultCounts.Wins++;
-    else if (/loss|lost|defeat/.test(result)) resultCounts.Losses++;
-    else if (/draw|tie/.test(result)) resultCounts.Draws++;
-    else resultCounts.Other++;
-  });
-  destroyChart("performance");
-  APP.charts.performance = new Chart(el("performanceChart"), {
-    type: "doughnut",
-    data: { labels: Object.keys(resultCounts), datasets:[{ data:Object.values(resultCounts), backgroundColor:["#20a56a","#db4a5a","#bc8a1e","#6d7f9a"], borderWidth:0 }] },
-    options:{ responsive:true, maintainAspectRatio:false, cutout:"66%", plugins:{ legend:{ position:"bottom" } } }
-  });
+function onSortClick(event) {
+  const btn = event.target.closest("[data-sort]");
+  if (!btn) return;
+  const type = btn.closest("table").id.replace("Table", "");
+  const state = APP.tables[type];
+  const key = btn.dataset.sort;
+  if (state.sortKey === key) state.dir *= -1;
+  else { state.sortKey = key; state.dir = key === "Player" || LOWER_IS_BETTER.has(key) ? 1 : -1; }
+  renderTable(type);
 }
+
+/* ---------- Matches ---------- */
+
+function matchCard(m) {
+  const t = resultType(m.Result);
+  const d = formatDate(m.Date);
+  const notes = show(m.Notes) === "—" ? "" : m.Notes;
+  return `
+    <article class="match is-${t}">
+      <div class="match-date" title="${escapeHtml(d.full || m.Date)}"><b>${escapeHtml(String(d.day))}</b><span>${escapeHtml(d.month)}</span></div>
+      <div class="match-body">
+        <div class="match-top">
+          <span class="match-opp">vs ${escapeHtml(show(m.Opponent))}</span>
+          <span class="result-pill is-${t}">${escapeHtml(show(m.Result))}</span>
+        </div>
+        <div class="match-scores">
+          <span><b>${escapeHtml(show(m.Score))}</b> <small>(${escapeHtml(show(m.Overs))} ov)</small></span>
+          <span class="match-dash">–</span>
+          <span><b>${escapeHtml(show(m["Opp. Score"]))}</b> <small>(${escapeHtml(show(m["Opp. Overs"]))} ov)</small></span>
+        </div>
+        ${notes ? `<span class="match-note">${escapeHtml(notes)}</span>` : ""}
+      </div>
+    </article>`;
+}
+
+function renderMatches() {
+  const list = [...APP.data.matches]
+    .filter(m => APP.matchFilter === "all" || resultType(m.Result) === APP.matchFilter)
+    .sort((a, b) => dateValue(b.Date) - dateValue(a.Date));
+  el("matchesList").innerHTML = list.map(matchCard).join("");
+  el("matchesEmpty").hidden = list.length > 0;
+}
+
+/* ---------- VS mode ---------- */
 
 function populateVsSelectors() {
-  const names = [...APP.playerIndex.keys()].sort((a,b) => a.localeCompare(b));
-  [el("vsPlayerA"), el("vsPlayerB")].forEach(select => {
-    const current = select.value;
-    select.innerHTML = names.map(name => `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`).join("");
-    if (names.includes(current)) select.value = current;
+  const names = [...APP.players.keys()].sort((a, b) => a.localeCompare(b));
+  const options = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+  const a = el("vsPlayerA"), b = el("vsPlayerB");
+  const prevA = a.value, prevB = b.value;
+  a.innerHTML = b.innerHTML = options;
+  if (names.includes(prevA)) a.value = prevA;
+  else if (names.length) a.value = topName("batting", "Runs") || names[0];
+  if (names.includes(prevB) && prevB !== a.value) b.value = prevB;
+  else if (names.length > 1) b.value = [topName("bowling", "Wickets"), ...names].find(n => n && n !== a.value);
+}
+
+function topName(type, key) {
+  return [...APP.data[type]].sort((x, y) => num(y[key]) - num(x[key]))[0]?.Player.trim();
+}
+
+function renderVs() {
+  const a = APP.players.get(el("vsPlayerA").value);
+  const b = APP.players.get(el("vsPlayerB").value);
+  const box = el("vsComparison");
+  if (!a || !b) { box.innerHTML = `<p class="empty">Need at least two players to compare.</p>`; return; }
+
+  const metrics = [
+    ["Batting"],
+    ["Runs", "batting", "Runs", "high"],
+    ["Strike rate", "batting", "S/R", "high"],
+    ["Average", "batting", "Ave", "high"],
+    ["Highest score", "batting", "HS", "high"],
+    ["Boundaries (4s + 6s)", "batting", r => isBlank(r?.["4s"]) && isBlank(r?.["6s"]) ? "" : num(r["4s"]) + num(r["6s"]), "high"],
+    ["Catches", "batting", "Catches", "high"],
+    ["Bowling"],
+    ["Wickets", "bowling", "Wickets", "high"],
+    ["Economy", "bowling", "Economy", "low"],
+    ["Average", "bowling", "Ave", "low"],
+    ["Strike rate", "bowling", "S/R", "low"]
+  ];
+
+  const pick = (p, type, key) => {
+    const rec = p[type];
+    const v = typeof key === "function" ? key(rec) : rec?.[key];
+    return isBlank(v) ? null : num(v);
+  };
+
+  box.innerHTML = `
+    <div class="vs-head">
+      <button type="button" data-player="${escapeHtml(a.name)}">${avatarHtml(a.name, a.photo, "avatar is-lg")}<b>${escapeHtml(a.name)}</b></button>
+      <button type="button" data-player="${escapeHtml(b.name)}">${avatarHtml(b.name, b.photo, "avatar is-lg")}<b>${escapeHtml(b.name)}</b></button>
+    </div>` + metrics.map(([label, type, key, mode]) => {
+      if (!type) return `<p class="vs-group">${label}</p>`;
+      const av = pick(a, type, key), bv = pick(b, type, key);
+      const both = av !== null && bv !== null && av !== bv;
+      const aWin = both && (mode === "high" ? av > bv : av < bv);
+      const bWin = both && !aWin;
+      const total = (av || 0) + (bv || 0);
+      // For "lower is better" stats, invert so the longer bar is the better one.
+      const share = v => !total ? 0 : mode === "high" ? (v || 0) / total : v === null ? 0 : 1 - v / total;
+      return `
+        <div class="vs-row">
+          <span class="vs-val ${aWin ? "is-win" : ""}">${av === null ? "—" : +av.toFixed(2)}</span>
+          <span class="vs-label">${escapeHtml(label)}</span>
+          <span class="vs-val ${bWin ? "is-win" : ""}">${bv === null ? "—" : +bv.toFixed(2)}</span>
+          <span class="vs-bar"><span class="${aWin ? "is-win" : ""}" style="--w:${share(av) * 100}%"></span></span>
+          <span class="vs-bar is-b"><span class="${bWin ? "is-win" : ""}" style="--w:${share(bv) * 100}%"></span></span>
+        </div>`;
+    }).join("");
+}
+
+/* ---------- Player profile ---------- */
+
+function openPlayer(name) {
+  const p = APP.players.get(name);
+  if (!p) return;
+  const tags = [...badges("batting", p.batting), ...badges("bowling", p.bowling)];
+  if (p.batting) p.batting.Boundaries = isBlank(p.batting["4s"]) && isBlank(p.batting["6s"]) ? "" : `${num(p.batting["4s"])} / ${num(p.batting["6s"])}`;
+  const statGrid = (title, rec, keys) => rec ? `
+    <h3 class="sheet-section">${title}</h3>
+    <div class="profile-grid">${keys.map(([label, key]) => `<div class="profile-stat"><span>${label}</span><b>${escapeHtml(show(rec[key]))}</b></div>`).join("")}</div>` : "";
+
+  el("playerModalBody").innerHTML = `
+    <div class="profile-hero">
+      ${avatarHtml(p.name, p.photo, "avatar is-xl")}
+      <div>
+        <p class="eyebrow">${seasonLabel(APP.season)} profile</p>
+        <h2 id="playerName">${escapeHtml(p.name)}</h2>
+        <div class="tags">${tags.map(t => `<span class="tag">🔥 ${escapeHtml(t)}</span>`).join("")}${[p.batting && "Batter", p.bowling && num(p.bowling.Balls) > 0 && "Bowler"].filter(Boolean).map(t => `<span class="tag is-muted">${t}</span>`).join("")}</div>
+      </div>
+    </div>
+    ${statGrid("Batting", p.batting, [["Runs", "Runs"], ["Balls", "Balls"], ["S/R", "S/R"], ["Average", "Ave"], ["High score", "HS"], ["Innings", "Innings"], ["4s / 6s", "Boundaries"], ["Catches", "Catches"]])}
+    ${statGrid("Bowling", p.bowling, [["Wickets", "Wickets"], ["Overs", "Overs"], ["Runs", "Runs"], ["Economy", "Economy"], ["Average", "Ave"], ["S/R", "S/R"]])}`;
+
+  const dlg = el("playerModal");
+  if (!dlg.open) dlg.showModal();
+}
+
+function closePlayer() {
+  const dlg = el("playerModal");
+  if (!dlg.open) return;
+  dlg.classList.add("is-closing");
+  setTimeout(() => { dlg.classList.remove("is-closing"); dlg.close(); }, 180);
+}
+
+/* ---------- Navigation ---------- */
+
+const VIEWS = ["home", "batting", "bowling", "matches", "vs"];
+const LEGACY_HASH = { dashboard: "home", "vs-mode": "vs", top: "home" };
+
+function route() {
+  let view = location.hash.slice(1) || "home";
+  view = LEGACY_HASH[view] || view;
+  if (!VIEWS.includes(view)) view = "home";
+  closePlayer();
+  document.querySelectorAll(".view").forEach(v => { v.hidden = v.dataset.view !== view; });
+  document.querySelectorAll(".tab").forEach(t => t.dataset.view === view ? t.setAttribute("aria-current", "page") : t.removeAttribute("aria-current"));
+  window.scrollTo({ top: 0, behavior: "instant" });
+}
+
+/* ---------- Theme, install, toast ---------- */
+
+function toggleTheme() {
+  const dark = document.documentElement.dataset.theme !== "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  try { localStorage.setItem("blueDemonTheme", dark ? "dark" : "light"); } catch { /* ignore */ }
+}
+
+let deferredInstall = null;
+function setupInstall() {
+  window.addEventListener("beforeinstallprompt", e => {
+    e.preventDefault();
+    deferredInstall = e;
+    el("installBtn").hidden = false;
   });
-  if (names.length > 1) {
-    if (!el("vsPlayerA").value) el("vsPlayerA").value = names[0];
-    if (!el("vsPlayerB").value || el("vsPlayerB").value === el("vsPlayerA").value) el("vsPlayerB").value = names[1];
+  window.addEventListener("appinstalled", () => { el("installBtn").hidden = true; toast("Installed — find Blue Demons on your home screen"); });
+
+  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  if (ios && !standalone) el("installBtn").hidden = false;
+
+  el("installBtn").addEventListener("click", async () => {
+    if (deferredInstall) {
+      deferredInstall.prompt();
+      await deferredInstall.userChoice;
+      deferredInstall = null;
+      el("installBtn").hidden = true;
+    } else {
+      toast("Tap Share, then “Add to Home Screen”", 5000);
+    }
+  });
+
+  if ("serviceWorker" in navigator && location.protocol !== "file:") {
+    navigator.serviceWorker.register("sw.js").catch(err => console.warn("Service worker failed:", err));
   }
 }
 
-function renderVsComparison() {
-  const aName = el("vsPlayerA").value;
-  const bName = el("vsPlayerB").value;
-  const a = APP.playerIndex.get(aName);
-  const b = APP.playerIndex.get(bName);
-  const box = el("vsComparison");
-  if (!a || !b) { box.innerHTML = ""; return; }
-
-  const metrics = [
-    ["Runs", num(a.batting.Runs), num(b.batting.Runs), "high"],
-    ["Strike Rate", num(a.batting["S/R"]), num(b.batting["S/R"]), "high"],
-    ["Average (Bat)", num(a.batting.Ave), num(b.batting.Ave), "high"],
-    ["Highest Score", num(a.batting.HS), num(b.batting.HS), "high"],
-    ["Wickets", num(a.bowling.Wickets), num(b.bowling.Wickets), "high"],
-    ["Economy", num(a.bowling.Economy), num(b.bowling.Economy), "low"],
-    ["Average (Bowl)", num(a.bowling.Ave), num(b.bowling.Ave), "low"],
-    ["Bowling S/R", num(a.bowling["S/R"]), num(b.bowling["S/R"]), "low"]
-  ];
-
-  const rows = metrics.map(([label, av, bv, mode]) => {
-    const aHas = String(a.batting[label] ?? a.bowling[label] ?? "").trim() !== "" || av !== 0;
-    const bHas = String(b.batting[label] ?? b.bowling[label] ?? "").trim() !== "" || bv !== 0;
-    const aWin = aHas && bHas && av !== bv && (mode === "high" ? av > bv : av < bv);
-    const bWin = aHas && bHas && av !== bv && (mode === "high" ? bv > av : bv < av);
-    return `
-      <div class="compare-row">
-        <div class="compare-cell compare-value ${aWin ? "winner" : ""} ${!aHas ? "na" : ""}">${aHas ? displayNum(av) : "—"}</div>
-        <div class="compare-cell compare-stat">${escapeHtml(label)}</div>
-        <div class="compare-cell compare-value ${bWin ? "winner" : ""} ${!bHas ? "na" : ""}">${bHas ? displayNum(bv) : "—"}</div>
-      </div>`;
-  }).join("");
-
-  box.innerHTML = `
-    <div class="compare-cell compare-grid-head compare-value">${escapeHtml(aName)}</div>
-    <div class="compare-cell compare-grid-head compare-stat">STAT</div>
-    <div class="compare-cell compare-grid-head compare-value">${escapeHtml(bName)}</div>
-    ${rows}`;
+let toastTimer;
+function toast(message, ms = 2400) {
+  const t = el("toast");
+  t.textContent = message;
+  t.hidden = false;
+  requestAnimationFrame(() => t.classList.add("is-shown"));
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.classList.remove("is-shown"); setTimeout(() => { t.hidden = true; }, 250); }, ms);
 }
 
-function openPlayerModal(name) {
-  const player = APP.playerIndex.get(name);
-  if (!player) return;
-  const batting = player.batting;
-  const bowling = player.bowling;
-  const photo = batting.Photo || bowling.Photo || "";
-  const badges = [...eliteBadges(batting, "batting"), ...eliteBadges(bowling, "bowling")];
-
-  const avatar = playerAvatar(name, photo, "player-hero-avatar");
-  const body = el("playerModalBody");
-  body.innerHTML = "";
-  const hero = document.createElement("div");
-  hero.className = "player-hero";
-  hero.appendChild(avatar);
-  hero.insertAdjacentHTML("beforeend", `
-    <div>
-      <p class="eyebrow">2026–27 PLAYER PROFILE</p>
-      <h2 class="title is-3 mb-2">${escapeHtml(name)}</h2>
-      <p class="has-text-grey">${badges.length ? badges.map(escapeHtml).join(" · ") : "Season stats"}</p>
-    </div>`);
-  body.appendChild(hero);
-
-  const stats = [
-    ["Runs", batting.Runs],
-    ["Wickets", bowling.Wickets],
-    ["Average", batting.Ave || bowling.Ave],
-    ["S/R", batting["S/R"] || bowling["S/R"]],
-    ["HS", batting.HS]
-  ];
-  const grid = document.createElement("div");
-  grid.className = "profile-stats";
-  stats.forEach(([label, value]) => {
-    const card = document.createElement("div");
-    card.className = "profile-stat";
-    card.innerHTML = `<span class="profile-stat-label">${escapeHtml(label)}</span><span class="profile-stat-value">${escapeHtml(displayNum(value))}</span>`;
-    grid.appendChild(card);
-  });
-  body.appendChild(grid);
-
-  const modal = el("playerModal");
-  modal.classList.add("is-active");
-  document.documentElement.classList.add("is-clipped");
-}
-
-function closeModal() {
-  el("playerModal").classList.remove("is-active");
-  document.documentElement.classList.remove("is-clipped");
-}
-
-function setupTheme() {
-  const saved = localStorage.getItem("blueDemonTheme");
-  const dark = saved === "dark";
-  document.body.classList.toggle("theme-dark", dark);
-  updateThemeButton();
-}
-
-function updateThemeButton() {
-  const dark = document.body.classList.contains("theme-dark");
-  el("themeToggle").querySelector(".theme-icon").textContent = dark ? "☀" : "☾";
-  el("themeToggle").querySelector(".theme-label").textContent = dark ? "Light" : "Dark";
-}
-
-function toggleTheme() {
-  const dark = !document.body.classList.contains("theme-dark");
-  document.body.classList.toggle("theme-dark", dark);
-  localStorage.setItem("blueDemonTheme", dark ? "dark" : "light");
-  updateThemeButton();
-  renderCharts();
-}
-
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>'"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[char]));
-}
-
-function escapeAttr(value) { return escapeHtml(value); }
+/* ---------- Boot ---------- */
 
 function setupEvents() {
+  el("seasonSelect").innerHTML = Object.keys(SHEET_CONFIG).map(s => `<option value="${s}">${seasonLabel(s)}</option>`).join("");
+  el("seasonSelect").value = APP.season;
+  el("seasonSelect").addEventListener("change", e => {
+    APP.season = e.target.value;
+    try { localStorage.setItem("blueDemonSeason", APP.season); } catch { /* ignore */ }
+    closePlayer();
+    loadSeason(APP.season);
+  });
+
   el("themeToggle").addEventListener("click", toggleTheme);
-  el("refreshDataBtn").addEventListener("click", () => loadSeason(APP.season).catch(handleLoadError));
-  el("seasonSelect").addEventListener("change", async (event) => {
-    APP.season = event.target.value;
-    await loadSeason(APP.season).catch(handleLoadError);
-  });
-  ["vsPlayerA", "vsPlayerB"].forEach(id => el(id).addEventListener("change", renderVsComparison));
-  document.querySelectorAll("[data-close-modal]").forEach(node => node.addEventListener("click", closeModal));
-  el("playerModal").querySelector(".modal-background").addEventListener("click", closeModal);
-  document.addEventListener("keydown", event => { if (event.key === "Escape") closeModal(); });
+  el("refreshBtn").addEventListener("click", () => { if (!APP.loading) loadSeason(APP.season, { force: true }); });
 
-  const burger = document.querySelector(".navbar-burger");
-  burger.addEventListener("click", () => {
-    const target = el(burger.dataset.target);
-    burger.classList.toggle("is-active");
-    target.classList.toggle("is-active");
-    burger.setAttribute("aria-expanded", burger.classList.contains("is-active") ? "true" : "false");
+  Object.entries(TABLES).forEach(([type, cfg]) => {
+    el(cfg.search).addEventListener("input", e => {
+      (APP.tables[type] ||= { query: "", sortKey: cfg.sortKey, dir: -1 }).query = e.target.value;
+      renderTable(type);
+    });
+    el(`${type}Table`).tHead.addEventListener("click", onSortClick);
   });
-  document.querySelectorAll(".nav-link").forEach(link => link.addEventListener("click", () => {
-    burger.classList.remove("is-active");
-    el("mainNav").classList.remove("is-active");
-    burger.setAttribute("aria-expanded", "false");
-  }));
+
+  el("matchFilter").addEventListener("click", e => {
+    const chip = e.target.closest("[data-filter]");
+    if (!chip) return;
+    APP.matchFilter = chip.dataset.filter;
+    el("matchFilter").querySelectorAll(".chip").forEach(c => c.classList.toggle("is-active", c === chip));
+    renderMatches();
+  });
+
+  ["vsPlayerA", "vsPlayerB"].forEach(id => el(id).addEventListener("change", renderVs));
+
+  // One delegated handler opens any player profile.
+  document.addEventListener("click", e => {
+    const target = e.target.closest("[data-player]");
+    if (target && !target.closest("dialog")) openPlayer(target.dataset.player);
+  });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Enter" && e.target.matches("tr[data-player]")) openPlayer(e.target.dataset.player);
+  });
+
+  const dlg = el("playerModal");
+  dlg.addEventListener("click", e => { if (e.target === dlg || e.target.closest("[data-close]")) closePlayer(); });
+  dlg.addEventListener("cancel", e => { e.preventDefault(); closePlayer(); });
+
+  window.addEventListener("hashchange", route);
+
+  // Refresh when the app comes back to the foreground (e.g. reopened from home screen).
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" || APP.loading) return;
+    const cached = readCache(APP.season);
+    if (!cached || Date.now() - cached.savedAt > 2 * 60 * 1000) loadSeason(APP.season);
+  });
 }
 
-function handleLoadError(error) {
-  console.error(error);
-  setSyncStatus(`Sync error · ${error.message || "Could not load live sheets"}`, false);
-}
-
-async function init() {
-  setupTheme();
+function init() {
+  try {
+    const saved = localStorage.getItem("blueDemonSeason");
+    if (saved && SHEET_CONFIG[saved]) APP.season = saved;
+  } catch { /* ignore */ }
   setupEvents();
-
-  // Wait for live Google Sheets data
-  await loadSeason(APP.season).catch(handleLoadError);
-
-  APP.initialized = true;
+  setupInstall();
+  route();
+  loadSeason(APP.season);
 }
 
-document.addEventListener("DOMContentLoaded", init);
+init();
