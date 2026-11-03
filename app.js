@@ -20,6 +20,7 @@ const BATTING_COLUMNS = ["Player", "Matches", "Innings", "Runs", "Balls", "S/R",
 const BOWLING_COLUMNS = ["Player", "Matches", "Innings", "Wickets", "Balls", "Overs", "Runs", "Economy", "Ave", "S/R"];
 const MATCH_COLUMNS = ["Date", "Opponent", "Result", "Score", "Overs", "Opp. Score", "Opp. Overs", "Notes"];
 const CACHE_PREFIX = "blueDemonData:";
+const SHARE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3m0 0L8 7m4-4 4 4M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 const APP = {
   season: Object.keys(SHEET_CONFIG)[0],
@@ -27,7 +28,10 @@ const APP = {
   players: new Map(),
   tables: {},
   matchFilter: "all",
-  loading: null
+  loading: null,
+  view: null,
+  pendingPlayer: null,
+  pendingVs: null
 };
 
 const el = (id) => document.getElementById(id);
@@ -227,6 +231,8 @@ function renderAll(skeleton = false) {
     el("summaryCards").innerHTML = '<div class="stat skeleton"></div>'.repeat(4);
     ["runsLeaders", "wicketsLeaders"].forEach(id => el(id).innerHTML = '<li class="skeleton-line"></li>'.repeat(5));
     el("recentMatches").innerHTML = '<div class="match skeleton"></div>'.repeat(2);
+    el("recordsGrid").innerHTML = '<div class="record-tile skeleton"></div>'.repeat(4);
+    el("milestones").hidden = true;
     return;
   }
   renderHome();
@@ -235,6 +241,8 @@ function renderAll(skeleton = false) {
   renderMatches();
   populateVsSelectors();
   renderVs();
+  applyPendingVs();
+  openPendingPlayer();
 }
 
 /* ---------- Home ---------- */
@@ -276,6 +284,8 @@ function renderHome() {
   el("recentMatches").innerHTML = sortedMatches.length
     ? sortedMatches.slice(0, 3).map(matchCard).join("")
     : `<p class="empty">No matches yet this season.</p>`;
+
+  renderRecords();
 }
 
 function renderLeaders(id, rows, key, sub) {
@@ -294,6 +304,83 @@ function renderLeaders(id, rows, key, sub) {
         <span class="leader-value">${num(r[key])}</span>
       </button>
     </li>`).join("") : `<li class="empty">No data yet.</li>`;
+}
+
+/* ---------- Records & milestones ---------- */
+
+// Minimums so one lucky over doesn't top the rate-based records.
+const QUALIFY = { battingBalls: 20, battingInnings: 3, bowlingBalls: 24, bowlingWickets: 3 };
+
+function best(rows, key, { lowest = false, where = () => true } = {}) {
+  const pool = rows.filter(r => !isBlank(r[key]) && where(r));
+  if (!pool.length) return null;
+  return pool.reduce((top, r) => (lowest ? num(r[key]) < num(top[key]) : num(r[key]) > num(top[key])) ? r : top);
+}
+
+function scoreRuns(score) {
+  const m = String(score ?? "").match(/^\s*(\d+)/);
+  return m ? +m[1] : null;
+}
+
+function computeRecords() {
+  const { batting, bowling, matches } = APP.data;
+  const records = [];
+  const addPlayer = (label, row, key, sub) => {
+    if (row && num(row[key]) > 0) records.push({ label, value: show(row[key]), who: row.Player.trim(), sub });
+  };
+
+  addPlayer("Highest score", best(batting, "HS"), "HS");
+  addPlayer("Best strike rate", best(batting, "S/R", { where: r => num(r.Balls) >= QUALIFY.battingBalls }), "S/R", `min ${QUALIFY.battingBalls} balls`);
+  addPlayer("Best batting avg", best(batting, "Ave", { where: r => num(r.Innings) >= QUALIFY.battingInnings }), "Ave", `min ${QUALIFY.battingInnings} innings`);
+  addPlayer("Most sixes", best(batting, "6s"), "6s");
+  addPlayer("Most fours", best(batting, "4s"), "4s");
+  addPlayer("Most catches", best(batting, "Catches"), "Catches");
+  addPlayer("Best economy", best(bowling, "Economy", { lowest: true, where: r => num(r.Balls) >= QUALIFY.bowlingBalls }), "Economy", `min ${QUALIFY.bowlingBalls / 6} overs`);
+  addPlayer("Best bowling avg", best(bowling, "Ave", { lowest: true, where: r => num(r.Wickets) >= QUALIFY.bowlingWickets }), "Ave", `min ${QUALIFY.bowlingWickets} wickets`);
+
+  const totals = matches.map(m => ({ m, ours: scoreRuns(m.Score), theirs: scoreRuns(m["Opp. Score"]) }));
+  const highest = totals.filter(t => t.ours !== null).sort((a, b) => b.ours - a.ours)[0];
+  if (highest) records.push({ label: "Highest team total", value: show(highest.m.Score), sub: `vs ${highest.m.Opponent}` });
+  const lowestConceded = totals.filter(t => t.theirs !== null).sort((a, b) => a.theirs - b.theirs)[0];
+  if (lowestConceded) records.push({ label: "Lowest total conceded", value: show(lowestConceded.m["Opp. Score"]), sub: `by ${lowestConceded.m.Opponent}` });
+
+  let streak = 0, longest = 0;
+  [...matches].sort((a, b) => dateValue(a.Date) - dateValue(b.Date)).forEach(m => {
+    streak = resultType(m.Result) === "win" ? streak + 1 : 0;
+    longest = Math.max(longest, streak);
+  });
+  if (longest > 1) records.push({ label: "Longest win streak", value: longest, sub: "matches in a row" });
+
+  return records;
+}
+
+// Players who are close to the next round number.
+function computeMilestones() {
+  const out = [];
+  APP.data.batting.forEach(r => {
+    const runs = num(r.Runs), next = (Math.floor(runs / 50) + 1) * 50, need = next - runs;
+    if (runs > 0 && need <= 20) out.push({ who: r.Player.trim(), text: `needs <b>${need}</b> for ${next} runs`, closeness: need / 50 });
+  });
+  APP.data.bowling.forEach(r => {
+    const wkts = num(r.Wickets), next = (Math.floor(wkts / 5) + 1) * 5, need = next - wkts;
+    if (wkts > 0 && need <= 2) out.push({ who: r.Player.trim(), text: `needs <b>${need}</b> for ${next} wickets`, closeness: need / 5 });
+  });
+  return out.sort((a, b) => a.closeness - b.closeness).slice(0, 4);
+}
+
+function renderRecords() {
+  const records = computeRecords();
+  el("recordsGrid").innerHTML = records.length ? records.map(r => `
+    <${r.who ? `button type="button" data-player="${escapeHtml(r.who)}"` : "div"} class="record-tile">
+      <span class="record-label">${escapeHtml(r.label)}</span>
+      <span class="record-value">${escapeHtml(String(r.value))}</span>
+      <span class="record-who">${escapeHtml(r.who || r.sub || "")}${r.who && r.sub ? ` <small>· ${escapeHtml(r.sub)}</small>` : ""}</span>
+    </${r.who ? "button" : "div"}>`).join("") : `<p class="empty">Records appear once matches are played.</p>`;
+
+  const milestones = computeMilestones();
+  el("milestones").hidden = !milestones.length;
+  el("milestoneList").innerHTML = milestones.map(m => `
+    <li><button type="button" data-player="${escapeHtml(m.who)}">${avatarHtml(m.who, APP.players.get(m.who)?.photo)}<span><b>${escapeHtml(m.who)}</b> ${m.text}</span></button></li>`).join("");
 }
 
 function avatarHtml(name, photo, cls = "avatar") {
@@ -384,6 +471,7 @@ function matchCard(m) {
         <div class="match-top">
           <span class="match-opp">vs ${escapeHtml(show(m.Opponent))}</span>
           <span class="result-pill is-${t}">${escapeHtml(show(m.Result))}</span>
+          <button type="button" class="share-btn" data-share-match="${APP.data.matches.indexOf(m)}" aria-label="Share this result">${SHARE_ICON}</button>
         </div>
         <div class="match-scores">
           <span><b>${escapeHtml(show(m.Score))}</b> <small>(${escapeHtml(show(m.Overs))} ov)</small></span>
@@ -492,8 +580,9 @@ function openPlayer(name) {
         <div class="tags">${tags.map(t => `<span class="tag">🔥 ${escapeHtml(t)}</span>`).join("")}${[p.batting && "Batter", p.bowling && num(p.bowling.Balls) > 0 && "Bowler"].filter(Boolean).map(t => `<span class="tag is-muted">${t}</span>`).join("")}</div>
       </div>
     </div>
-    ${statGrid("Batting", p.batting, [["Runs", "Runs"], ["Balls", "Balls"], ["S/R", "S/R"], ["Average", "Ave"], ["High score", "HS"], ["Innings", "Innings"], ["4s / 6s", "Boundaries"], ["Catches", "Catches"]])}
-    ${statGrid("Bowling", p.bowling, [["Wickets", "Wickets"], ["Overs", "Overs"], ["Runs", "Runs"], ["Economy", "Economy"], ["Average", "Ave"], ["S/R", "S/R"]])}`;
+    ${statGrid("Batting", p.batting, [["Runs", "Runs"], ["Balls", "Balls"], ["S/R", "S/R"], ["Average", "Ave"], ["High score", "HS"], ["Innings", "Innings"], ["Not outs", "NO"], ["4s / 6s", "Boundaries"], ["Catches", "Catches"]])}
+    ${statGrid("Bowling", p.bowling, [["Wickets", "Wickets"], ["Overs", "Overs"], ["Runs", "Runs"], ["Economy", "Economy"], ["Average", "Ave"], ["S/R", "S/R"]])}
+    <button type="button" class="share-btn is-wide" data-share-player="${escapeHtml(p.name)}">${SHARE_ICON} Share ${escapeHtml(p.name)}'s stats</button>`;
 
   const dlg = el("playerModal");
   if (!dlg.open) dlg.showModal();
@@ -504,6 +593,7 @@ function closePlayer() {
   if (!dlg.open) return;
   dlg.classList.add("is-closing");
   setTimeout(() => { dlg.classList.remove("is-closing"); dlg.close(); }, 180);
+  if (location.hash.startsWith("#player/")) history.replaceState(null, "", hashFor(APP.view || "home"));
 }
 
 /* ---------- Navigation ---------- */
@@ -511,14 +601,159 @@ function closePlayer() {
 const VIEWS = ["home", "batting", "bowling", "matches", "vs"];
 const LEGACY_HASH = { dashboard: "home", "vs-mode": "vs", top: "home" };
 
+// Deep links: #batting, #player/Zain, #vs/Zain/Anas — optionally ending in a season, e.g. #player/Zain/2025-26
+function parseHash() {
+  const parts = location.hash.slice(1).split("/").map(s => { try { return decodeURIComponent(s); } catch { return s; } });
+  const season = parts.length > 1 && SHEET_CONFIG[parts[parts.length - 1]] ? parts.pop() : null;
+  const head = LEGACY_HASH[parts[0]] || parts[0] || "home";
+  if (head === "player") return { view: APP.view || "home", player: parts[1], season };
+  return { view: VIEWS.includes(head) ? head : "home", args: parts.slice(1), season };
+}
+
+function setSeason(season) {
+  if (season === APP.season) return;
+  APP.season = season;
+  el("seasonSelect").value = season;
+  try { localStorage.setItem("blueDemonSeason", season); } catch { /* ignore */ }
+}
+
+function hashFor(...parts) {
+  return "#" + parts.map(encodeURIComponent).join("/");
+}
+
+function linkTo(...parts) {
+  return location.origin + location.pathname + hashFor(...parts);
+}
+
 function route() {
-  let view = location.hash.slice(1) || "home";
-  view = LEGACY_HASH[view] || view;
-  if (!VIEWS.includes(view)) view = "home";
-  closePlayer();
-  document.querySelectorAll(".view").forEach(v => { v.hidden = v.dataset.view !== view; });
+  const { view, args = [], player, season } = parseHash();
+  if (season && season !== APP.season) {
+    setSeason(season);
+    if (APP.view) loadSeason(season); // on first load, init() loads it
+  }
+  if (player) { APP.pendingPlayer = player; openPendingPlayer(); }
+  else closePlayer();
+  if (view === "vs" && args.length === 2) { APP.pendingVs = args; applyPendingVs(); }
+  showView(view);
+}
+
+function showView(view, direction = 0) {
+  if (view === APP.view) return;
+  APP.view = view;
+  document.querySelectorAll(".view").forEach(v => {
+    v.hidden = v.dataset.view !== view;
+    v.dataset.enter = direction > 0 ? "right" : direction < 0 ? "left" : "";
+  });
   document.querySelectorAll(".tab").forEach(t => t.dataset.view === view ? t.setAttribute("aria-current", "page") : t.removeAttribute("aria-current"));
   window.scrollTo({ top: 0, behavior: "instant" });
+}
+
+function openPendingPlayer() {
+  if (APP.pendingPlayer && APP.players.has(APP.pendingPlayer)) {
+    openPlayer(APP.pendingPlayer);
+    APP.pendingPlayer = null;
+  }
+}
+
+function applyPendingVs() {
+  const [a, b] = APP.pendingVs || [];
+  if (!APP.players.has(a) || !APP.players.has(b)) return;
+  el("vsPlayerA").value = a;
+  el("vsPlayerB").value = b;
+  APP.pendingVs = null;
+  renderVs();
+}
+
+/* ---------- Gestures: swipe between tabs, pull to refresh ---------- */
+
+function setupGestures() {
+  const main = el("main"), ptr = el("ptr");
+  const PULL_TRIGGER = 70;
+  let start = null;
+
+  main.addEventListener("touchstart", e => {
+    if (e.touches.length !== 1 || el("playerModal").open) { start = null; return; }
+    const t = e.touches[0];
+    start = {
+      x: t.clientX, y: t.clientY, time: Date.now(), pull: 0,
+      // Tables scroll sideways themselves, so swipes there don't change tabs.
+      canSwipe: !e.target.closest(".table-scroll, input, select"),
+      canPull: APP.view === "home" && window.scrollY <= 0 && !APP.loading
+    };
+  }, { passive: true });
+
+  main.addEventListener("touchmove", e => {
+    if (!start?.canPull) return;
+    const dy = e.touches[0].clientY - start.y, dx = e.touches[0].clientX - start.x;
+    if (dy <= 0 || Math.abs(dx) > dy) { start.pull = 0; ptr.style.removeProperty("--pull"); return; }
+    start.pull = Math.min(dy * 0.5, 110);
+    ptr.classList.add("is-pulling");
+    ptr.classList.toggle("is-armed", start.pull >= PULL_TRIGGER);
+    ptr.style.setProperty("--pull", `${start.pull}px`);
+  }, { passive: true });
+
+  main.addEventListener("touchend", e => {
+    if (!start) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - start.x, dy = t.clientY - start.y;
+    ptr.classList.remove("is-pulling", "is-armed");
+    ptr.style.removeProperty("--pull");
+
+    if (start.canPull && start.pull >= PULL_TRIGGER) {
+      loadSeason(APP.season, { force: true });
+    } else if (start.canSwipe && Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 2 && Date.now() - start.time < 600) {
+      const next = VIEWS[VIEWS.indexOf(APP.view) + (dx < 0 ? 1 : -1)];
+      if (next) {
+        history.pushState(null, "", hashFor(next));
+        showView(next, dx < 0 ? 1 : -1);
+      }
+    }
+    start = null;
+  });
+}
+
+/* ---------- Sharing ---------- */
+
+async function share({ title, text, url }) {
+  if (navigator.share) {
+    try { await navigator.share({ title, text, url }); } catch { /* cancelled */ }
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(`${text}\n${url}`);
+    toast("Copied to clipboard");
+  } catch {
+    toast("Couldn't share on this device");
+  }
+}
+
+function sharePlayer(name) {
+  const p = APP.players.get(name);
+  if (!p) return;
+  const parts = [];
+  if (p.batting && !isBlank(p.batting.Runs)) parts.push(`${num(p.batting.Runs)} runs (S/R ${show(p.batting["S/R"])}, HS ${show(p.batting.HS)})`);
+  if (p.bowling && num(p.bowling.Wickets) > 0) parts.push(`${num(p.bowling.Wickets)} wickets (Econ ${show(p.bowling.Economy)})`);
+  share({
+    title: `${p.name} · Blue Demon Cricket`,
+    text: `🏏 ${p.name} — ${seasonLabel(APP.season)}: ${parts.join(", ") || "season stats"}`,
+    url: linkTo("player", p.name, APP.season)
+  });
+}
+
+function shareMatch(index) {
+  const m = APP.data.matches[index];
+  if (!m) return;
+  const d = formatDate(m.Date);
+  share({
+    title: `Blue Demons vs ${m.Opponent}`,
+    text: `🏏 Blue Demons ${show(m.Result)} vs ${show(m.Opponent)}${d.full ? ` (${d.full})` : ""}\nBlue Demons ${show(m.Score)} (${show(m.Overs)} ov) · ${show(m.Opponent)} ${show(m["Opp. Score"])} (${show(m["Opp. Overs"])} ov)`,
+    url: linkTo("matches", APP.season)
+  });
+}
+
+function shareVs() {
+  const a = el("vsPlayerA").value, b = el("vsPlayerB").value;
+  share({ title: `${a} vs ${b} · Blue Demon Cricket`, text: `⚔ ${a} vs ${b} — who's better this season?`, url: linkTo("vs", a, b, APP.season) });
 }
 
 /* ---------- Theme, install, toast ---------- */
@@ -577,6 +812,7 @@ function setupEvents() {
     APP.season = e.target.value;
     try { localStorage.setItem("blueDemonSeason", APP.season); } catch { /* ignore */ }
     closePlayer();
+    if (parseHash().season) history.replaceState(null, "", hashFor(APP.view));
     loadSeason(APP.season);
   });
 
@@ -599,7 +835,18 @@ function setupEvents() {
     renderMatches();
   });
 
-  ["vsPlayerA", "vsPlayerB"].forEach(id => el(id).addEventListener("change", renderVs));
+  ["vsPlayerA", "vsPlayerB"].forEach(id => el(id).addEventListener("change", () => {
+    renderVs();
+    history.replaceState(null, "", hashFor("vs", el("vsPlayerA").value, el("vsPlayerB").value));
+  }));
+  el("vsShare").addEventListener("click", shareVs);
+  document.addEventListener("click", e => {
+    const btn = e.target.closest("[data-share-match], [data-share-player]");
+    if (!btn) return;
+    e.stopPropagation();
+    if (btn.dataset.shareMatch) shareMatch(+btn.dataset.shareMatch);
+    else sharePlayer(btn.dataset.sharePlayer);
+  }, true);
 
   // One delegated handler opens any player profile.
   document.addEventListener("click", e => {
@@ -615,6 +862,7 @@ function setupEvents() {
   dlg.addEventListener("cancel", e => { e.preventDefault(); closePlayer(); });
 
   window.addEventListener("hashchange", route);
+  window.addEventListener("popstate", route);
 
   // Refresh when the app comes back to the foreground (e.g. reopened from home screen).
   document.addEventListener("visibilitychange", () => {
@@ -631,6 +879,7 @@ function init() {
   } catch { /* ignore */ }
   setupEvents();
   setupInstall();
+  setupGestures();
   route();
   loadSeason(APP.season);
 }

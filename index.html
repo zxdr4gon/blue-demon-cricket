@@ -79,6 +79,10 @@
   </header>
 
   <main id="main">
+    <div id="ptr" class="ptr" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4.5h-4.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+
     <!-- HOME -->
     <section class="view" id="view-home" data-view="home">
       <div class="hero">
@@ -122,6 +126,17 @@
           <a class="link" href="#matches">All →</a>
         </header>
         <div class="match-list" id="recentMatches"></div>
+      </article>
+
+      <article class="panel">
+        <header class="panel-head">
+          <div><p class="eyebrow">Season bests</p><h2>Records</h2></div>
+        </header>
+        <div class="records-grid" id="recordsGrid"></div>
+        <div id="milestones" hidden>
+          <h3 class="sub-head">Chasing milestones</h3>
+          <ul class="milestone-list" id="milestoneList"></ul>
+        </div>
       </article>
     </section>
 
@@ -169,6 +184,10 @@
     <section class="view" id="view-vs" data-view="vs" hidden>
       <header class="view-head">
         <div><p class="eyebrow">Head to head</p><h2>VS Mode</h2></div>
+        <button id="vsShare" class="share-btn is-pill" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3m0 0L8 7m4-4 4 4M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Share
+        </button>
       </header>
       <div class="panel">
         <div class="vs-pickers">
