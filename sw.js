@@ -1,6 +1,6 @@
 /* Blue Demon Cricket service worker.
    Bump VERSION whenever index.html / styles.css / app.js change so phones pick up the update. */
-const VERSION = "bd-v3";
+const VERSION = "bd-v4";
 const IMG_CACHE = "bd-img";
 const SHELL = [
   "./",

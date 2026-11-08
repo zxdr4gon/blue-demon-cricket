@@ -766,26 +766,37 @@ function toggleTheme() {
 
 let deferredInstall = null;
 function setupInstall() {
+  const wrap = el("installWrap"), btn = el("installBtn"), hint = el("installHint");
+  const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const sync = () => { wrap.hidden = standalone(); };
+  sync();
+  matchMedia("(display-mode: standalone)").addEventListener?.("change", sync);
+
   window.addEventListener("beforeinstallprompt", e => {
     e.preventDefault();
     deferredInstall = e;
-    el("installBtn").hidden = false;
+    hint.hidden = true;
   });
-  window.addEventListener("appinstalled", () => { el("installBtn").hidden = true; toast("Installed — find Blue Demons on your home screen"); });
+  window.addEventListener("appinstalled", () => {
+    deferredInstall = null;
+    wrap.hidden = true;
+    toast("Installed — find Blue Demons on your home screen");
+  });
 
-  const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone;
-  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  if (ios && !standalone) el("installBtn").hidden = false;
-
-  el("installBtn").addEventListener("click", async () => {
+  btn.addEventListener("click", async () => {
     if (deferredInstall) {
-      deferredInstall.prompt();
-      await deferredInstall.userChoice;
+      const prompt = deferredInstall;
       deferredInstall = null;
-      el("installBtn").hidden = true;
-    } else {
-      toast("Tap Share, then “Add to Home Screen”", 5000);
+      prompt.prompt();
+      const { outcome } = await prompt.userChoice;
+      if (outcome === "accepted") wrap.hidden = true;
+      return;
     }
+    hint.textContent = ios
+      ? "In Safari, tap Share, then Add to Home Screen."
+      : "Use your browser menu's Install app or Add to home screen.";
+    hint.hidden = !hint.hidden;
   });
 
   if ("serviceWorker" in navigator && location.protocol !== "file:") {

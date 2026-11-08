@@ -67,9 +67,6 @@
           <span class="sr-only">Season</span>
           <select id="seasonSelect"></select>
         </label>
-        <button id="installBtn" class="icon-btn" type="button" aria-label="Install app" title="Install app" hidden>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4.5-4.5M12 15l4.5-4.5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
         <button id="themeToggle" class="icon-btn" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
           <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
           <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -198,6 +195,12 @@
         <div id="vsComparison" class="vs-rows"></div>
       </div>
     </section>
+
+    <!-- Install option, kept low-key at the bottom of every page -->
+    <footer class="app-foot" id="installWrap" hidden>
+      <button id="installBtn" class="foot-link" type="button">Install app</button>
+      <p id="installHint" class="hint" hidden></p>
+    </footer>
   </main>
 
   <dialog id="playerModal" class="sheet" aria-labelledby="playerName">

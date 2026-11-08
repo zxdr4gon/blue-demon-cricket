@@ -2,7 +2,7 @@
   "name": "Blue Demon Cricket",
   "short_name": "Blue Demons",
   "description": "Live stats for the Maine East Blue Demon cricket team.",
-  "id": "./",
+  "id": "/blue-demon-cricket/?app=2",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

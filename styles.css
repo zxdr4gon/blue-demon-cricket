@@ -159,6 +159,9 @@ main { max-width: 1120px; margin: 0 auto; padding: 20px 16px 48px; }
 .link { color: var(--accent); font-weight: 700; font-size: .85rem; }
 .empty { color: var(--muted); text-align: center; padding: 24px 12px; font-size: .9rem; list-style: none; }
 .hint { color: var(--muted); font-size: .78rem; text-align: center; }
+.app-foot { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 28px; }
+.foot-link { background: none; border: 0; padding: 6px 10px; color: var(--muted); font: inherit; font-size: .78rem; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.foot-link:hover { color: var(--accent); }
 
 /* ---------- Hero ---------- */
 .hero {
