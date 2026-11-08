@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#081a31">
+  <meta name="description" content="Build a shareable cricket player card from season statistics.">
+  <title>Player Cards · Blue Demon Cricket</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="../icons/favicon-64.png" type="image/png">
+  <link rel="apple-touch-icon" href="../icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="./styles.css">
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="../" aria-label="Back to Blue Demon Cricket">
+      <img src="../icons/logo-160.png" alt="" width="38" height="38">
+      <span><strong>BLUE DEMONS</strong><small>PLAYER LAB</small></span>
+    </a>
+    <a class="back-link" href="../">← Team stats</a>
+  </header>
+
+  <main>
+    <section class="intro">
+      <p class="kicker">THE PLAYER SERIES · 2026/27</p>
+      <h1>Make your<br><em>mark.</em></h1>
+      <p class="intro-copy">Turn a season of cricket into a card worth keeping. Bring in your stats, set your role, and make it yours.</p>
+      <div class="intro-meta"><span class="live-dot"></span> LOCAL PLAYER RATINGS <span class="meta-divider">/</span> BUILT FOR THE BLUE DEMONS</div>
+    </section>
+
+    <section class="workspace" aria-label="Player card builder">
+      <div class="editor">
+        <div class="section-heading"><span>01 / PLAYER DETAILS</span><span class="section-note">START HERE</span></div>
+        <label class="field"><span>Player name</span><input id="playerName" type="text" maxlength="32" placeholder="e.g. Zain Mahdi" autocomplete="name"></label>
+        <div class="two-col">
+          <label class="field"><span>Playing role</span>
+            <select id="playerRole">
+              <option value="auto">Auto detect</option>
+              <option value="Batter">Batter</option>
+              <option value="Bowler">Bowler</option>
+              <option value="All-rounder">All-rounder</option>
+              <option value="Wicketkeeper">Wicketkeeper</option>
+            </select>
+          </label>
+          <label class="field"><span>Season</span><select id="season"></select></label>
+        </div>
+
+        <div class="import-panel">
+          <div class="import-copy"><strong>Already in the team stats?</strong><small>Pull in a player from the published score sheets.</small></div>
+          <div class="import-controls">
+            <select id="teamPlayer" aria-label="Select a player"><option value="">Choose a player…</option></select>
+            <button id="loadPlayer" class="quiet-button" type="button">Import</button>
+          </div>
+          <p id="loadStatus" class="status" role="status">Team stats load when you open this page.</p>
+        </div>
+
+        <div class="section-heading stats-heading"><span>02 / SEASON NUMBERS</span><span class="section-note">EDITABLE</span></div>
+        <div class="stat-fields">
+          <label class="field"><span>Matches</span><input id="matches" type="number" min="0" step="1" placeholder="0"></label>
+          <label class="field"><span>Runs</span><input id="runs" type="number" min="0" step="1" placeholder="0"></label>
+          <label class="field"><span>Balls faced</span><input id="balls" type="number" min="0" step="1" placeholder="0"></label>
+          <label class="field"><span>Batting average</span><input id="average" type="number" min="0" step="0.01" placeholder="—"></label>
+          <label class="field"><span>Strike rate</span><input id="strikeRate" type="number" min="0" step="0.01" placeholder="—"></label>
+          <label class="field"><span>Highest score</span><input id="highScore" type="number" min="0" step="1" placeholder="—"></label>
+          <label class="field"><span>Fours</span><input id="fours" type="number" min="0" step="1" placeholder="0"></label>
+          <label class="field"><span>Sixes</span><input id="sixes" type="number" min="0" step="1" placeholder="0"></label>
+          <label class="field"><span>Wickets</span><input id="wickets" type="number" min="0" step="1" placeholder="0"></label>
+          <label class="field"><span>Bowling economy</span><input id="economy" type="number" min="0" step="0.01" placeholder="—"></label>
+          <label class="field"><span>Bowling average</span><input id="bowlingAverage" type="number" min="0" step="0.01" placeholder="—"></label>
+          <label class="field"><span>Bowling strike rate</span><input id="bowlingStrikeRate" type="number" min="0" step="0.01" placeholder="—"></label>
+          <label class="field"><span>Catches</span><input id="catches" type="number" min="0" step="1" placeholder="0"></label>
+        </div>
+
+        <div class="section-heading stats-heading"><span>03 / CARD FINISH</span><span class="section-note">MAKE IT YOURS</span></div>
+        <label class="field"><span>Player photo <small>Optional</small></span><input id="photo" type="file" accept="image/*"></label>
+        <div class="actions">
+          <button id="reset" class="quiet-button" type="button">Reset fields</button>
+          <button id="download" class="primary-button" type="button">Download card <span>↗</span></button>
+        </div>
+        <p class="fine-print">Ratings are estimates based on the submitted season stats. They are designed for fun and team comparison, not as official player rankings.</p>
+      </div>
+
+      <aside class="preview">
+        <div class="preview-head"><div><span class="section-heading-text">YOUR PLAYER CARD</span><p>Live preview</p></div><span class="preview-index">BD / 01</span></div>
+        <div class="card-stage">
+          <canvas id="playerCard" width="720" height="1000" role="img" aria-label="Preview of your cricket player card"></canvas>
+        </div>
+        <div class="preview-foot"><span>BLUE DEMON CRICKET</span><span>PLAYER SERIES · 01</span></div>
+      </aside>
+    </section>
+    <footer><span>BLUE DEMON CRICKET</span><a href="../">Back to team dashboard ↗</a></footer>
+  </main>
+</body>
+</html>

@@ -582,7 +582,8 @@ function openPlayer(name) {
     </div>
     ${statGrid("Batting", p.batting, [["Runs", "Runs"], ["Balls", "Balls"], ["S/R", "S/R"], ["Average", "Ave"], ["High score", "HS"], ["Innings", "Innings"], ["Not outs", "NO"], ["4s / 6s", "Boundaries"], ["Catches", "Catches"]])}
     ${statGrid("Bowling", p.bowling, [["Wickets", "Wickets"], ["Overs", "Overs"], ["Runs", "Runs"], ["Economy", "Economy"], ["Average", "Ave"], ["S/R", "S/R"]])}
-    <button type="button" class="share-btn is-wide" data-share-player="${escapeHtml(p.name)}">${SHARE_ICON} Share ${escapeHtml(p.name)}'s stats</button>`;
+    <button type="button" class="share-btn is-wide" data-share-player="${escapeHtml(p.name)}">${SHARE_ICON} Share ${escapeHtml(p.name)}'s stats</button>
+    <a class="share-btn is-wide" href="player-cards/?player=${encodeURIComponent(p.name)}&amp;season=${encodeURIComponent(APP.season)}">Create ${escapeHtml(p.name)}'s player card ↗</a>`;
 
   const dlg = el("playerModal");
   if (!dlg.open) dlg.showModal();
